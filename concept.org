@@ -1,0 +1,30 @@
+* Planning
+  - First phase, "stupid" client, server does everything
+    - Client
+      - Gets server address/port from command line, tries to connect
+      - Upon connection, sends "hello" package with his/her name
+      - Server then continuously sends game data, which is then rendered
+      - Client sends input data to server
+    - Server
+      - Waits for exactly two clients, receiving their name in the "hello" package
+      - Upon receiving two clients, sends the world to both
+      - Upon receiving input events, updates game and sends it back to clients
+* Networking
+  - Serialization either with "derive generic" and the "binary"
+    package or simply show/read for now.
+  - Server waits for two connections, after that just for network
+    packages (purely reactive, so to speak).
+  - The client waits for keyboard input or network input.
+  - Haskell networking lacks "select" for synchronous I/O
+    multiplexing. How do we cope?
+    - Server doesn't need this, it only reacts to input (and maybe
+      does something on a timeout)
+    - Client needs to re-render on network input, send a signal on
+      keyboard input.
+      - Can we do this with threads?
+	- We might do it with [[http://chimera.labs.oreilly.com/books/1230000000929/ch10.html#sec_tchan][STM]]
+	- Terminal.hs from SneakyBeaky provides "getCharEvent" which
+          blocks until a char is read.
+	- I imagine a function of type =IO ByteString= which also blocks and
+          returns the read byte (or structure)
+	- Using =waitEither= to get either character or network input
