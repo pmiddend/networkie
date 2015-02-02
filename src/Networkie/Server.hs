@@ -1,11 +1,15 @@
 {-# LANGUAGE RecordWildCards #-}
 module Main where
 
+import System.IO(hClose)
 import Control.Concurrent.Chan
 import Control.Monad(forever)
 import qualified Data.Map.Strict as Map
 import Control.Monad.State.Strict
 import Control.Monad.IO.Class(liftIO)
+import Network
+import Text.Printf(printf)
+import Control.Concurrent(forkIO,forkFinally)
 
 {-
 Funktionsweise:
@@ -23,9 +27,13 @@ type PlayerName = String
 
 type World = Int
 
+data ClientInput = ClientInput {
+  ciSomeInput :: Int
+  }
+
 data ServerCommand = SCommandNewClient PlayerName (Chan ClientCommand)
                    | SCommandClientRemove PlayerName
-                   | SCommandClientData ClientData
+                   | SCommandClientInput ClientInput
 
 data ClientCommand = CCommandWorldUpdate World
                    | CCommandReject
@@ -54,16 +62,24 @@ mainLoop = forever $ do
        else do liftIO $ putStrLn "Client is new, inserting"
                put (state { sdClients = Map.insert pn (ClientData clientchan) (sdClients state) })
                liftIO $ writeChan clientchan (CCommandWorldUpdate (sdWorld state))
+   SCommandClientRemove pn -> do
+     put (state { sdClients = Map.delete pn (sdClients state) })
+   SCommandClientInput ip -> do
+     liftIO $ putStrLn ("Got client input: " ++ show ip)
 
+talk = undefined
+               
 myport :: Int
 myport = 31337
 
 main :: IO ()
 main = withSocketsDo $ do
-  server <- newServer
   sock <- listenOn (PortNumber (fromIntegral myport))
   printf "Listening on port %d\n" myport
+  serverChan <- newChan
+  let initialWorld = 1
+  _ <- forkIO (evalStateT mainLoop (ServerData serverChan Map.empty initialWorld))
   forever $ do
       (handle, host, port) <- accept sock
       printf "Accepted connection from %s: %s\n" host (show port)
-      forkFinally (talk handle server) (\_ -> hClose handle)
+      forkFinally (talk handle serverChan) (\_ -> hClose handle)
