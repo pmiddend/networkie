@@ -1,11 +1,11 @@
 {-# LANGUAGE RecordWildCards #-}
 module Main where
 
-import System.IO(hClose)
+import System.IO(hClose,Handle)
 import Control.Concurrent.Chan
 import Control.Monad(forever)
 import qualified Data.Map.Strict as Map
-import Control.Monad.State.Strict
+import Control.Monad.State.Strict (StateT,get,put,evalStateT)
 import Control.Monad.IO.Class(liftIO)
 import Network
 import Text.Printf(printf)
@@ -65,9 +65,12 @@ mainLoop = forever $ do
    SCommandClientRemove pn -> do
      put (state { sdClients = Map.delete pn (sdClients state) })
    SCommandClientInput ip -> do
-     liftIO $ putStrLn ("Got client input: " ++ show ip)
+     liftIO $ putStrLn ("Got client input: " ++ show (ciSomeInput ip))
 
-talk = undefined
+talk :: Handle -> Chan ServerCommand -> IO ()
+talk handle serverChan = do
+  clientChan <- newChan
+  forkIO ()
                
 myport :: Int
 myport = 31337
