@@ -4,7 +4,7 @@ module Main where
 
 import Prelude()
 import ClassyPrelude
-import           Control.Concurrent         (forkFinally, forkIO)
+import           Control.Concurrent         (forkFinally, forkIO,myThreadId,throwTo)
 import           Control.Monad.State.Strict (StateT, evalStateT, get, gets, put)
 import qualified Data.ByteString.Char8      as BS8
 import qualified Data.Map.Strict            as Map
@@ -116,7 +116,8 @@ clientWrite h c = forever $ do
 clientHandler :: Handle -> Chan ServerCommand -> IO ()
 clientHandler h toServerChan = do
   inputChan <- newChan
-  _ <- forkIO (clientRead h inputChan)
+  tid <- myThreadId
+  _ <- forkFinally (clientRead h inputChan) (\(Left e) -> throwTo tid e)
   clientWriteChan <- newChan
   _ <- forkIO (clientWrite h clientWriteChan)
   -- Warte auf Input vom Client auf Socket oder vom Server
@@ -173,5 +174,5 @@ main = withSocketsDo $ do
        (clientSocket, addr) <- accept sock
        h <- socketToHandle clientSocket ReadWriteMode 
        printf "Accepted connection from: %s\n" (show addr)
-       forkFinally (clientHandler h serverChan) (\_ -> putStrLn "Closing handle..." >> hClose h)
+       forkFinally (clientHandler h serverChan) (\_ -> putStrLn "Closing client handle..." >> hClose h)
    Nothing -> putStrLn "Couldn't get port addrinfo, exiting"
