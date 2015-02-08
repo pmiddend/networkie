@@ -1,20 +1,59 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE RecordWildCards   #-}
 module Main where
 
-import Prelude()
-import ClassyPrelude
-import           Control.Concurrent         (forkFinally, forkIO,myThreadId,throwTo)
+import           ClassyPrelude
+import           Control.Concurrent         (forkFinally, forkIO, myThreadId,
+                                             throwTo,ThreadId)
 import           Control.Monad.State.Strict (StateT, evalStateT, get, gets, put)
 import qualified Data.ByteString.Char8      as BS8
 import qualified Data.Map.Strict            as Map
-import qualified Data.Text as T
-import           Network.Socket             (Family (..),
-                                             SocketType (..), accept,
-                                             defaultProtocol, listen, socket,
-                                             bindSocket,withSocketsDo,socketToHandle,getAddrInfo,AddrInfoFlag(..),defaultHints,AddrInfo(..))
-import           System.IO                  (IOMode(..))
+import qualified Data.Text                  as T
+import           FRP.Sodium                 (Event,newEvent,sync,execute,Behavior,accum,Reactive,filterJust,snapshot)
+import           Network.Socket             (AddrInfo (..), AddrInfoFlag (..),
+                                             sClose,SocketType (..), accept,
+                                             bindSocket, defaultHints,
+                                             defaultProtocol, getAddrInfo,
+                                             listen, socket, socketToHandle,
+                                             withSocketsDo)
+import           Prelude                    ()
+import           System.IO                  (IOMode (..))
 import           Text.Printf                (printf)
+
+data FrpSocket = FrpSocket {
+    frpsDataReceived :: Event BS8.ByteString
+  , frpsHandle       :: Handle
+  , frpsErrorOccured :: Event SomeException
+  }
+
+forkAndThen :: (Either SomeException a -> IO ()) -> IO a -> IO ThreadId
+forkAndThen = flip forkFinally
+
+newListenSocket :: Int -> IO (Event FrpSocket)
+newListenSocket p = do
+  addrinfos <- getAddrInfo
+                    (Just (defaultHints {addrFlags = [AI_PASSIVE]}))
+                    Nothing
+                    (Just (show p))
+  case headMay addrinfos of
+   Just serveraddr -> do
+     sock <- socket (addrFamily serveraddr) Stream defaultProtocol
+     bindSocket sock (addrAddress serveraddr)
+     listen sock myport
+     printf "Listening on port %d\n" myport
+     (eventNewSocket,pushNewSocket) <- sync newEvent
+     _ <- forkAndThen (\_ -> sClose sock) (forever $ do
+       (clientSocket, addr) <- accept sock
+       h <- socketToHandle clientSocket ReadWriteMode
+       printf "Accepted connection from: %s\n" (show addr)
+       (eventDataReceived,pushDataReceived) <- sync newEvent
+       (eventError,pushError) <- sync newEvent
+       _ <- forkAndThen (\(Left e) -> sync $ pushError e)
+                        (forever (BS8.hGetLine h >>= \l -> sync (pushDataReceived l))) -- FIXME: Das macht das ganze zeilenbasiert, man sollte hGetLine durch was geileres ersetzen
+       sync $ pushNewSocket (FrpSocket eventDataReceived h eventError)
+       )
+     return eventNewSocket
+   Nothing -> error "Couldn't get port addrinfo, exiting"
 
 {-
 Funktionsweise:
@@ -73,6 +112,14 @@ type ServerMainLoopState a = StateT ServerState IO a
 
 type ClientMainLoopState a = StateT ClientState IO a
 
+{-
+ - Die Funktion soll zukünftig eine Statemachine implementieren:
+   - Anfangs wartet sie auf 2 Spieler.
+   - Wenn 2 Spieler da sind, wird das Spiel gestartet.
+   - Quittet danach einer der Spieler, wird das Spiel beendet und man ist im Anfangszustand.
+   - Geht das Spiel aus, passiert quasi dasselbe.
+   - Wenn man im Spiel ist, werden keine neuen Spieler zugelassen.
+ -}
 serverMainLoop :: ServerMainLoopState ()
 serverMainLoop = forever $ do
   state <- get
@@ -157,9 +204,30 @@ clientMainLoop = forever $ do
 myport :: Int
 myport = 31337
 
+{-
+ - Was ist Input und Output beim reaktiven Programm?
+ - Clientmap, World? 
+ -}
+
+type ClientMap = Map.Map PlayerName PerClientData
+
+parseData :: BS8.ByteString -> ClientInput
+parseData l = let line = (T.pack . BS8.unpack) l
+              in if "name " `isPrefixOf` line
+                 then ClientInputName (drop 5 line)
+                 else ClientInputOther line
+         
+program :: Event FrpSocket -> Reactive (Behavior ClientMap)
+program socketEvent = accum Map.empty (fmap handleSocket socketEvent)
+  where handleSocket :: FrpSocket -> (ClientMap -> ClientMap)
+        handleSocket s m = filterJust $ snapshot f (parseData <$> (frpsDataReceived s)) m
+
 main :: IO ()
 main = withSocketsDo $ do
-  addrinfos <- getAddrInfo 
+  ls <- newListenSocket myport
+  return ()
+  {-
+  addrinfos <- getAddrInfo
                     (Just (defaultHints {addrFlags = [AI_PASSIVE]}))
                     Nothing (Just (show myport))
   case headMay addrinfos of
@@ -172,7 +240,8 @@ main = withSocketsDo $ do
      _ <- forkIO (evalStateT serverMainLoop (ServerState serverChan Map.empty initialWorld))
      forever $ do
        (clientSocket, addr) <- accept sock
-       h <- socketToHandle clientSocket ReadWriteMode 
+       h <- socketToHandle clientSocket ReadWriteMode
        printf "Accepted connection from: %s\n" (show addr)
        forkFinally (clientHandler h serverChan) (\_ -> putStrLn "Closing client handle..." >> hClose h)
    Nothing -> putStrLn "Couldn't get port addrinfo, exiting"
+  -}
