@@ -1,17 +1,3 @@
-* FRP
-
-  - Somehow wrap Sockets in FRP (Sodium?)
-  - How?
-    - There are multiple events that can occur on a socket: data received, disconnected, error (or something)
-    - There is no real state associated with a socket
-    - How do we write to a socket in FRP?
-    - Sample code for creating a new event:
-#+BEGIN_SRC haskell
-(e,pushfn) <- newEvent
-#+END_SRC
-    - =pushfn= can then be called to push to the event (from any thread?)
-    - Create 
-
 * Planning
   - First phase, "stupid" client, server does everything
     - Client

@@ -44,6 +44,5 @@ executable networkie-server
                      , lifted-base
                      , classy-prelude
                      , text
-                     , sodium
   hs-source-dirs:      src
   default-language:    Haskell2010
