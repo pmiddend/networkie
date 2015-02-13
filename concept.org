@@ -1,3 +1,32 @@
+* FRP
+
+  - Somehow wrap Sockets in FRP (Sodium?)
+  - How?
+    - Given "Event FrpSocket"
+      - Can we create a list of clients directly, with an optional
+        name (initially maybe)?
+	- Index by Handle?
+      - We can write an event that fires if an FrpSocket sends its name
+	- Given the socketevent, we can map to SentData
+	  - No we can't, we can only map from "Event FrpSocket" to
+            "Event (Event a))", and then we can't go back.
+	  - Can we somehow get to "Behavior (Event a))", from which we
+            could derive "Event a" again using switch?
+	  - Or even "Behavior (Behavior a))"
+	  - Event -> Behavior would be "hold", but that takes a
+            default value.
+	  - Use the Handle as a key into a Socket Map, add name as Maybe?
+	- Then we can filter to name received
+	- How do we drag along the socket?
+      - Then we'd like to update a "Map Name Socket"
+	- How?
+	- The Map is definitely a Behavior, and it's empty in the beginning
+	- Map to the "Map -> Map" function (insert), then do accum
+      - We can write an event that fires if an FrpSocket disconnects
+      - Then we'd like to update the map, too
+      - Can we write an event that fires if a _named_ FrpSocket writes data?
+      - How do we distribute that to the clients?
+
 * Planning
   - First phase, "stupid" client, server does everything
     - Client
