@@ -16,18 +16,6 @@ import           Network.Socket             (Family (..),
 import           System.IO                  (IOMode(..))
 import           Text.Printf                (printf)
 
-{-
-Funktionsweise:
-
-  - Server akzeptiert erstmal in einer Endlosschleife immer wieder Verbindungen.
-  - Für jede geöffnete Verbindung werden drei Threads geforked: Einer liest, der andere schreibt, der dirte vermittelt.
-  - Vorher wird allerdings auf den Spielernamen gewartet, erst danach werden die anderen beiden Threads gestartet.
-  - Es gibt eine Hauptschleife, die auf den Kommandochannel wartet.
-  - Ein Kommando ist: "neuer Client", "Client weggebrochen", "Client hat Daten empfangen"
-  - Wurde der Name empfangen, wird die "neuer Client"-Nachricht an den Kommandochannel geschickt.
-  - Der neue Client bekommt initial die Welt und verschickt sie.
--}
-
 type PlayerName = T.Text
 
 type World = Int
@@ -52,14 +40,19 @@ data ClientCommand = CCommandWorldUpdate World
                    deriving(Show)
 
 data PerClientData = PerClientData {
-  cdClientChan :: Chan ClientCommand
+    cdName :: T.Text
+  , cdClientChan :: Chan ClientCommand
   }
 
+type ServerCommandChan = Chan ServerCommand
+
+{-
 data ServerState = ServerState {
     sdMainChannel :: Chan ServerCommand
-  , sdClients     :: Map.Map PlayerName PerClientData
-  , sdWorld       :: World
+  {-, sdClients     :: Map.Map PlayerName PerClientData
+  , sdWorld       :: World-}
   }
+-}
 
 data ClientState = ClientState {
     csPlayerName      :: Maybe PlayerName
@@ -69,30 +62,46 @@ data ClientState = ClientState {
   , csSocketWriteChan :: Chan T.Text
   }
 
-type ServerMainLoopState a = StateT ServerState IO a
-
 type ClientMainLoopState a = StateT ClientState IO a
 
-serverMainLoop :: ServerMainLoopState ()
-serverMainLoop = forever $ do
-  state <- get
-  command <- readChan (sdMainChannel state)
+serverWaitForPlayers :: ServerCommandChan -> [PerClientData] -> IO ()
+serverWaitForPlayers commandChan clients = do
+  command <- readChan commandChan
   case command of
    SCommandNewClient pn clientchan -> do
-     if pn `Map.member` (sdClients state)
-       then do putStrLn "Client already exists, rejecting"
-               writeChan clientchan CCommandReject
-       else do putStrLn "Client is new, inserting"
-               put (state { sdClients = Map.insert pn (PerClientData clientchan) (sdClients state) })
-               writeChan clientchan (CCommandAccept pn)
-               writeChan clientchan (CCommandWorldUpdate (sdWorld state))
+     case find ((== pn) . cdName) clients of
+      Just _ -> do putStrLn "Client already exists, rejecting"
+                   writeChan clientchan CCommandReject
+                   serverWaitForPlayers commandChan clients
+      Nothing -> do putStrLn "Client is new, inserting"
+                    let clients' = PerClientData pn clientchan : clients
+                    writeChan clientchan (CCommandAccept pn)
+                    if length clients == 2
+                      then serverGame commandChan clients initialWorld
+                      else serverWaitForPlayers commandChan clients'
+   SCommandClientInput _ _ -> do
+     serverWaitForPlayers commandChan clients
    SCommandClientRemove pn -> do
-     put (state { sdClients = Map.delete pn (sdClients state) })
-   SCommandClientInput name ip -> do
-     putStrLn (name <> ": got client input: " <> tshow ip)
-     let newWorld = (sdWorld state) + 1
-     put (state { sdWorld = newWorld })
-     forM_ (Map.elems $ sdClients state) (\cd -> writeChan (cdClientChan cd) (CCommandWorldUpdate newWorld))
+     serverWaitForPlayers commandChan (filter ((== pn) . cdName) clients)
+
+serverGame :: ServerCommandChan -> [PerClientData] -> World -> IO ()
+serverGame commandChan clients world = do
+    mapM_ (\c -> writeChan (cdClientChan c) (CCommandWorldUpdate world)) clients
+    serverGame'
+  where serverGame' = do
+          command <- readChan commandChan
+          case command of
+            SCommandNewClient _ clientchan -> do
+              writeChan clientchan CCommandReject
+              serverGame commandChan clients world
+            SCommandClientInput name ip -> do
+              putStrLn (name <> ": got client input: " <> tshow ip)
+              let newWorld = world + 1
+              forM_ clients (\c -> writeChan (cdClientChan c) (CCommandWorldUpdate newWorld))
+            SCommandClientRemove pn -> do
+              mapM_ (\c -> writeChan (cdClientChan c) CCommandReject) (filter ((/= pn) . cdName) clients)
+              serverWaitForPlayers commandChan []
+
 
 clientRead :: Handle -> Chan ClientInput -> IO ()
 clientRead h inputChan = forever $ do
@@ -169,7 +178,7 @@ main = withSocketsDo $ do
      listen sock myport
      printf "Listening on port %d\n" myport
      serverChan <- newChan
-     _ <- forkIO (evalStateT serverMainLoop (ServerState serverChan Map.empty initialWorld))
+     _ <- forkIO (serverWaitForPlayers serverChan [])
      forever $ do
        (clientSocket, addr) <- accept sock
        h <- socketToHandle clientSocket ReadWriteMode 
