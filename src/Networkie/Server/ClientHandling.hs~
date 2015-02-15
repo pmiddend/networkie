@@ -1,0 +1,96 @@
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards   #-}
+module Networkie.Server.ClientHandling(
+    acceptLoop
+  ) where
+
+import           ClassyPrelude
+import           Control.Concurrent         (forkFinally, forkIO, myThreadId,
+                                             throwTo)
+import           Control.Monad.State.Strict (StateT, evalStateT, get, gets, put)
+import qualified Data.ByteString.Char8      as BS8
+import qualified Data.Text                  as T
+import           Network.Socket             (Socket,
+                                             accept,
+                                             socketToHandle)
+import           Prelude                    ()
+import           System.IO                  (IOMode (..))
+import           Text.Printf                (printf)
+import Networkie.Server.Common
+
+data ClientState = ClientState {
+    csPlayerName      :: Maybe PlayerName
+  , csReadChan        :: Chan (Either ClientInput ClientCommand)
+  , csToServerChan    :: Chan ServerCommand
+  , csClientChan      :: Chan ClientCommand
+  , csSocketWriteChan :: Chan T.Text
+  }
+
+type ClientMainLoopState a = StateT ClientState IO a
+
+clientRead :: Handle -> Chan ClientInput -> IO ()
+clientRead h inputChan = forever $ do
+  line <- (T.pack . BS8.unpack) <$> BS8.hGetLine h
+  if "name " `isPrefixOf` line
+    then writeChan inputChan (ClientInputName (drop 5 line))
+    else writeChan inputChan (ClientInputOther line)
+
+readChans :: Chan a -> Chan b -> IO (Chan (Either a b))
+readChans a b = do
+  result <- newChan
+  _ <- forkIO (forever $ readChan a >>= (writeChan result . Left))
+  _ <- forkIO (forever $ readChan b >>= (writeChan result . Right))
+  return result
+
+clientWrite :: Handle -> Chan T.Text -> IO ()
+clientWrite h c = forever $ do
+  line <- readChan c
+  BS8.hPut h (encodeUtf8 line)
+
+clientHandler :: Handle -> Chan ServerCommand -> IO ()
+clientHandler h toServerChan = do
+  inputChan <- newChan
+  tid <- myThreadId
+  _ <- forkFinally (clientRead h inputChan) (\(Left e) -> throwTo tid e)
+  clientWriteChan <- newChan
+  _ <- forkIO (clientWrite h clientWriteChan)
+  -- Warte auf Input vom Client auf Socket oder vom Server
+  clientChan <- newChan
+  mpChan <- readChans inputChan clientChan
+  evalStateT clientMainLoop (ClientState Nothing mpChan toServerChan clientChan clientWriteChan)
+
+clientWriteToServer :: ServerCommand -> ClientMainLoopState ()
+clientWriteToServer c = do
+  toServerChan <- gets csToServerChan
+  writeChan toServerChan c
+
+clientWriteToClient :: T.Text -> ClientMainLoopState ()
+clientWriteToClient s = do
+  clientChan <- gets csSocketWriteChan
+  writeChan clientChan s
+
+clientMainLoop :: ClientMainLoopState ()
+clientMainLoop = forever $ do
+  state <- get
+  n <- readChan (csReadChan state)
+  case n of
+    Left clientInput ->
+      case clientInput of
+       ClientInputName name -> clientWriteToServer (SCommandNewClient name (csClientChan state))
+       ClientInputOther other ->
+         case (csPlayerName state) of
+           Nothing -> clientWriteToClient "Please enter a name first\n"
+           Just name -> clientWriteToServer (SCommandClientInput name other)
+    Right clientCommand ->
+      case clientCommand of
+        CCommandWorldUpdate w -> clientWriteToClient ("New world: " <> tshow w <> "\n")
+        CCommandReject -> clientWriteToClient ("Greeting rejected\n")
+        CCommandAccept name -> do clientWriteToClient ("Greetings " <> name <> "!\n")
+                                  put (state { csPlayerName = Just name })
+
+acceptLoop :: Socket -> Chan ServerCommand -> IO ()
+acceptLoop sock serverChan = forever $ do
+  (clientSocket, addr) <- accept sock
+  h <- socketToHandle clientSocket ReadWriteMode
+  printf "Accepted connection from: %s\n" (show addr)
+  forkFinally (clientHandler h serverChan) (\_ -> putStrLn "Closing client handle..." >> hClose h)

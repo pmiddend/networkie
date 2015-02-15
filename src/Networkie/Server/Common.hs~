@@ -1,0 +1,27 @@
+module Networkie.Server.Common where
+
+import qualified Data.Text                  as T
+import           ClassyPrelude
+import Prelude()
+
+type PlayerName = T.Text
+
+type World = Int
+
+-- Input vom Client (noch nicht weiterzugeben an den Server)
+data ClientInput = ClientInputName PlayerName
+                 | ClientInputOther T.Text
+                 deriving(Show)
+
+type Client = Chan ClientCommand
+
+-- Nachricht vom Client an den Server
+data ServerCommand = SCommandNewClient PlayerName Client
+                   | SCommandClientRemove PlayerName
+                   | SCommandClientInput PlayerName T.Text
+
+-- Nachricht  vom Server an den Client
+data ClientCommand = CCommandWorldUpdate World
+                   | CCommandReject
+                   | CCommandAccept PlayerName
+                   deriving(Show)

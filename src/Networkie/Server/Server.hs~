@@ -1,0 +1,102 @@
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards   #-}
+module Main where
+
+import           ClassyPrelude
+import           Control.Concurrent         (forkIO)
+import qualified Data.Text                  as T
+import           Network.Socket             (AddrInfo (..), AddrInfoFlag (..),
+                                             SocketType (..),
+                                             bindSocket, defaultHints,
+                                             defaultProtocol, getAddrInfo,
+                                             listen, socket,
+                                             withSocketsDo)
+import           Prelude                    ()
+import           Text.Printf                (printf)
+import Networkie.Server.ClientHandling(acceptLoop)
+import Networkie.Server.Common
+
+initialWorld :: World
+initialWorld = 1
+
+data PerClientData = PerClientData {
+    cdName       :: T.Text
+  , cdClientChan :: Chan ClientCommand
+  }
+
+type ServerCommandChan = Chan ServerCommand
+
+{-
+data ServerState = ServerState {
+    sdMainChannel :: Chan ServerCommand
+  {-, sdClients     :: Map.Map PlayerName PerClientData
+  , sdWorld       :: World-}
+  }
+-}
+
+
+sendToClient :: ClientCommand -> Client -> IO ()
+sendToClient command clientChan = writeChan clientChan command
+
+readServerCommand :: ServerCommandChan -> IO ServerCommand
+readServerCommand commandChan = readChan commandChan
+
+serverWaitForPlayers :: ServerCommandChan -> [PerClientData] -> IO ()
+serverWaitForPlayers commandChan clients = do
+  command <- readServerCommand commandChan
+  case command of
+   SCommandNewClient pn client -> do
+     case find ((== pn) . cdName) clients of
+      Just _ -> do putStrLn "Client already exists, rejecting"
+                   sendToClient CCommandReject client
+                   serverWaitForPlayers commandChan clients
+      Nothing -> do putStrLn "Client is new, inserting"
+                    let clients' = PerClientData pn client : clients
+                    sendToClient (CCommandAccept pn) client
+                    if length clients == 2
+                      then serverGame commandChan clients initialWorld
+                      else serverWaitForPlayers commandChan clients'
+   SCommandClientInput _ _ -> do
+     serverWaitForPlayers commandChan clients
+   SCommandClientRemove pn -> do
+     serverWaitForPlayers commandChan (filter ((== pn) . cdName) clients)
+
+broadcast :: ClientCommand -> [PerClientData] -> IO ()
+broadcast command = mapM_ (sendToClient command . cdClientChan)
+
+serverGame :: ServerCommandChan -> [PerClientData] -> World -> IO ()
+serverGame commandChan clients world = do
+    broadcast (CCommandWorldUpdate world) clients
+    serverGame'
+  where serverGame' = do
+          command <- readServerCommand commandChan
+          case command of
+            SCommandNewClient _ clientchan -> do
+              sendToClient CCommandReject clientchan
+              serverGame commandChan clients world
+            SCommandClientInput name ip -> do
+              putStrLn (name <> ": got client input: " <> tshow ip)
+              let newWorld = world + 1
+              broadcast (CCommandWorldUpdate newWorld) clients
+            SCommandClientRemove pn -> do
+              mapM_ (sendToClient CCommandReject . cdClientChan) (filter ((/= pn) . cdName) clients)
+              serverWaitForPlayers commandChan []
+
+myport :: Int
+myport = 31337
+
+main :: IO ()
+main = withSocketsDo $ do
+  addrinfos <- getAddrInfo
+                    (Just (defaultHints {addrFlags = [AI_PASSIVE]}))
+                    Nothing (Just (show myport))
+  case headMay addrinfos of
+   Just serveraddr -> do
+     sock <- socket (addrFamily serveraddr) Stream defaultProtocol
+     bindSocket sock (addrAddress serveraddr)
+     listen sock myport
+     printf "Listening on port %d\n" myport
+     serverChan <- newChan
+     _ <- forkIO (serverWaitForPlayers serverChan [])
+     acceptLoop sock serverChan
+   Nothing -> putStrLn "Couldn't get port addrinfo, exiting"
