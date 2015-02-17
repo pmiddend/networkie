@@ -1,27 +1,42 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TemplateHaskell #-}
-module Networkie.Server where
+{-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE TemplateHaskell   #-}
+module Networkie.Server.ServerFramework(
+    IncomingCommand(..)
+  , OutgoingCommand(..)
+  , Port
+  , IncomingDataConversion
+  , OutgoingDataConversion
+  , Server
+  , readCommand
+  , writeCommand
+  , runServer
+  , closeServer
+  ) where
 
 import           ClassyPrelude
-import           Text.Printf                (printf)
+import           Control.Concurrent    (ThreadId, forkFinally, forkIO,
+                                        killThread)
+import           Control.Lens          (makeLenses, (^.))
 import qualified Data.ByteString.Char8 as BS8
-import Control.Lens((^.),makeLenses)
+import qualified Data.Text             as T
+import           Network.Socket        (AddrInfo (..), AddrInfoFlag (..),
+                                        Socket, SocketOption (..),
+                                        SocketType (..), accept, bindSocket,
+                                        defaultHints, defaultProtocol,
+                                        getAddrInfo, listen, sClose,
+                                        setSocketOption, socket, socketToHandle,
+                                        withSocketsDo)
+import           Networkie.List        (unfoldRest)
 import           Prelude               ()
-import qualified Data.Text as T
-import Networkie.List(unfoldRest)
-import  Control.Concurrent(forkIO,forkFinally,ThreadId,killThread)
-import Control.Monad.Loops(unfoldWhileM)
-import           Network.Socket             (AddrInfo (..), AddrInfoFlag (..),sClose,Socket,
-                                             SocketType (..),
-                                             bindSocket, defaultHints,
-                                             defaultProtocol, getAddrInfo,
-                                             listen, socket, accept,socketToHandle,
-                                             withSocketsDo,setSocketOption,SocketOption(..))
-import           System.IO                  (IOMode (..),BufferMode(..),hSetBuffering)
+import           System.IO             (BufferMode (..), IOMode (..),
+                                        hSetBuffering)
+import           Text.Printf           (printf)
 
 data IncomingCommand a = NewClient Handle
                        | ClientClosed Handle
                        | IncomingData Handle a
+                       deriving(Show)
 
 data OutgoingCommand a = CloseClient Handle
                        | SendData Handle a
@@ -34,20 +49,24 @@ type OutgoingDataConversion a = a -> BS8.ByteString
 data Server a = Server {
     _sincomingChannel :: Chan (IncomingCommand a)
   , _soutgoingChannel :: Chan (OutgoingCommand a)
-  , _sacceptThread :: ThreadId
-  , _scommandThread :: ThreadId
+  , _sacceptThread    :: ThreadId
+  , _scommandThread   :: ThreadId
   }
 
 $(makeLenses ''Server)
 
 readCommand :: Server a -> IO (IncomingCommand a)
-readCommand = undefined
+readCommand s = readChan (s ^. sincomingChannel)
 
 writeCommand :: Server a -> (OutgoingCommand a) -> IO ()
-writeCommand = undefined
+writeCommand s = writeChan (s ^. soutgoingChannel)
 
-hGetAll :: Handle -> IO BS8.ByteString
-hGetAll h = BS8.concat <$> unfoldWhileM ((== 1024) . BS8.length) (BS8.hGetSome h 1024)
+hGetAll :: Handle -> IO (Maybe BS8.ByteString)
+hGetAll h = do
+  result <- BS8.hGetSome h 1024
+  if BS8.null result
+    then return Nothing
+    else return (Just result)
 
 clientRead :: Handle ->
               Chan (IncomingCommand a) ->
@@ -55,10 +74,13 @@ clientRead :: Handle ->
               IO ()
 clientRead h incomingChannel incomingConversion = clientRead' mempty
   where clientRead' buffer = do
-          bytes <- hGetAll h
-          let (as,rest) = unfoldRest incomingConversion (buffer <> bytes)
-          mapM_ (writeChan incomingChannel . (IncomingData h)) as
-          clientRead' rest
+          bytes' <- hGetAll h
+          case bytes' of
+           Nothing -> return ()
+           Just bytes -> do
+             let (as,rest) = unfoldRest incomingConversion (buffer <> bytes)
+             mapM_ (writeChan incomingChannel . (IncomingData h)) as
+             clientRead' rest
 
 acceptLoop :: Socket ->
               Chan (IncomingCommand a) ->
@@ -81,7 +103,7 @@ commandLoop :: Chan (OutgoingCommand a) ->
 commandLoop outgoingChannel outgoingConversion = forever $ do
   command <- readChan outgoingChannel
   case command of
-   CloseClient h -> hClose h
+   CloseClient h -> putStrLn "Closing handle" >> hClose h
    SendData h a -> BS8.hPut h (outgoingConversion a)
 
 runServer :: Port ->
