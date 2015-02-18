@@ -1,5 +1,6 @@
 module Networkie.List(
-  unfoldRest
+    unfoldRest
+  , list
   ) where
 
 import Prelude()
@@ -12,3 +13,7 @@ unfoldRest fct ini = go fct ini mempty
       case f s of                                     
        Nothing -> (acc, s)                           
        Just (a, b) -> go f b (acc <> [a])            
+
+list :: a -> ([b] -> a) -> [b] -> a
+list a _ [] = a
+list _ f xs = f xs
